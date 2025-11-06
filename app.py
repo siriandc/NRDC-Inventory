@@ -450,7 +450,46 @@ def run_streamlit_ui():  # pragma: no cover
         st.subheader("Record Stock Movement (IN / OUT / Transfer)")
         items_df = list_df("SELECT * FROM items ORDER BY name")
         wh_df = list_df("SELECT code FROM warehouses ORDER BY code")
-        wh_list = (wh_df["code"].tolist() if pd is not None and hasattr(wh_df, "__getitem__") else [DEFAULT_WAREHOUSE_CODE])
+        suppliers_df = list_df("SELECT name FROM suppliers ORDER BY name")
+        projects_df = list_df("SELECT code, name FROM projects ORDER BY code")
+
+        def _records(data):
+            if pd is not None and hasattr(data, "to_dict"):
+                return data.to_dict("records")
+            return data
+
+        wh_records = _records(wh_df)
+        supplier_records = _records(suppliers_df)
+        project_records = _records(projects_df)
+
+        wh_list = [str(r["code"]) for r in wh_records] if wh_records else [DEFAULT_WAREHOUSE_CODE]
+
+        entity_options: list[dict[str, str]] = []
+        for code in wh_list:
+            entity_options.append({"type": "warehouse", "value": code, "label": f"Warehouse: {code}"})
+        for row in supplier_records:
+            name = str(row.get("name", "")).strip()
+            if name:
+                entity_options.append({"type": "supplier", "value": name, "label": f"Supplier: {name}"})
+        for row in project_records:
+            code = str(row.get("code", "")).strip()
+            if not code:
+                continue
+            name = str(row.get("name", "")).strip()
+            label = f"Project: {code}" + (f" — {name}" if name else "")
+            entity_options.append({"type": "project", "value": code, "label": label})
+
+        def _find_index(value: str, kind: str) -> int:
+            for idx, opt in enumerate(entity_options):
+                if opt["type"] == kind and opt["value"] == value:
+                    return idx
+            return 0 if entity_options else 0
+
+        default_wh_idx = _find_index(DEFAULT_WAREHOUSE_CODE, "warehouse")
+
+        def _fmt_choice(opt: dict[str, str]) -> str:
+            return opt.get("label", "")
+
         with st.form("tx_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -458,24 +497,68 @@ def run_streamlit_ui():  # pragma: no cover
                 item_name = st.selectbox("Item", options=(items_df["name"].tolist() if pd is not None else []))
                 qty = st.number_input("Quantity", min_value=0.0, step=1.0, value=0.0)
             with c2:
-                wh_src = st.selectbox("From Warehouse", options=wh_list, index=max(0, wh_list.index(DEFAULT_WAREHOUSE_CODE) if DEFAULT_WAREHOUSE_CODE in wh_list else 0))
-                wh_dst = st.selectbox("To Warehouse (for Transfer)", options=wh_list)
+                origin_choice = st.selectbox("Origin", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
+                destination_choice = st.selectbox("Destination", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
             with c3:
-                project = st.text_input("Project code (for OUT)")
-                supplier = st.text_input("Supplier (for IN)")
                 ref = st.text_input("Reference (PO/DR/JO)")
             if st.form_submit_button("Save"):
-                sku = items_df.loc[items_df["name"] == item_name, "sku"].iloc[0]
-                if mode == "IN":
-                    ok, msg = record_transaction(t_type='IN', sku=sku, qty=qty, supplier_name=supplier or None, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
-                elif mode == "OUT":
-                    ok, msg = record_transaction(t_type='OUT', sku=sku, qty=qty, project_code=project or None, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
+                if pd is not None and hasattr(items_df, "loc"):
+                    sku_series = items_df.loc[items_df["name"] == item_name, "sku"]
+                    sku = sku_series.iloc[0] if not sku_series.empty else None
                 else:
-                    # transfer: XFER_OUT then XFER_IN
-                    ok, msg = record_transaction(t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
-                    if ok:
-                        ok, msg = record_transaction(t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None, warehouse_code=wh_dst, allow_negative_stock=False)
-                (st.success if ok else st.error)(msg)
+                    sku = next((row.get("sku") for row in items_df if row.get("name") == item_name), None) if item_name else None
+
+                if not sku:
+                    st.error("Unable to determine SKU for the selected item.")
+                else:
+                    origin_type = origin_choice.get("type") if isinstance(origin_choice, dict) else None
+                    origin_val = origin_choice.get("value") if isinstance(origin_choice, dict) else None
+                    dest_type = destination_choice.get("type") if isinstance(destination_choice, dict) else None
+                    dest_val = destination_choice.get("value") if isinstance(destination_choice, dict) else None
+
+                    ok = False
+                    msg = ""
+
+                    supplier_name = None
+                    project_code = None
+
+                    if mode == "IN":
+                        if dest_type != "warehouse" or not dest_val:
+                            st.error("Destination must be a warehouse for IN transactions.")
+                        else:
+                            if origin_type == "supplier":
+                                supplier_name = origin_val
+                            elif origin_type == "project":
+                                project_code = origin_val
+                            ok, msg = record_transaction(
+                                t_type='IN', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=dest_val, allow_negative_stock=False)
+                    elif mode == "OUT":
+                        if origin_type != "warehouse" or not origin_val:
+                            st.error("Origin must be a warehouse for OUT transactions.")
+                        else:
+                            if dest_type == "project":
+                                project_code = dest_val
+                            elif dest_type == "supplier":
+                                supplier_name = dest_val
+                            ok, msg = record_transaction(
+                                t_type='OUT', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                    else:
+                        if origin_type != "warehouse" or dest_type != "warehouse" or not origin_val or not dest_val:
+                            st.error("Transfers require both origin and destination to be warehouses.")
+                        else:
+                            ok, msg = record_transaction(
+                                t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                            if ok:
+                                ok, msg = record_transaction(
+                                    t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None,
+                                    warehouse_code=dest_val, allow_negative_stock=False)
+                    if msg:
+                        (st.success if ok else st.error)(msg)
 
     elif page == "PO/Receiving":
         st.subheader("Purchase Orders & Receiving")
@@ -556,6 +639,49 @@ def run_streamlit_ui():  # pragma: no cover
         st.caption("Transactions CSV (optional new cols): ts,type,sku,qty,unit_cost,warehouse_code,supplier_name,project_code,reference,remarks")
         if pd is not None:
             st.dataframe(list_df("SELECT * FROM transactions ORDER BY ts DESC, id DESC").head(100), use_container_width=True)
+
+        st.markdown("#### Entity ID Reference")
+        entity_lookup_sql = """
+            SELECT 'Supplier' AS entity, id, NULL AS code, name
+            FROM suppliers
+            UNION ALL
+            SELECT 'Project' AS entity, id, code, name
+            FROM projects
+            UNION ALL
+            SELECT 'Warehouse' AS entity, id, code, name
+            FROM warehouses
+            ORDER BY entity, name
+        """
+        st.dataframe(list_df(entity_lookup_sql), use_container_width=True)
+
+        st.markdown("#### Current Stock per Project")
+        project_stock_sql = """
+            SELECT
+                p.code AS project_code,
+                p.name AS project_name,
+                i.sku,
+                i.name AS item_name,
+                ROUND(SUM(CASE
+                    WHEN t.type = 'OUT' THEN t.qty
+                    WHEN t.type = 'IN' THEN -t.qty
+                    ELSE 0 END), 4) AS qty_on_project
+            FROM projects p
+            LEFT JOIN transactions t ON t.project_id = p.id
+            LEFT JOIN items i ON i.id = t.item_id
+            GROUP BY p.id, p.code, p.name, i.sku, i.name
+            HAVING ABS(SUM(CASE
+                    WHEN t.type = 'OUT' THEN t.qty
+                    WHEN t.type = 'IN' THEN -t.qty
+                    ELSE 0 END)) > 0.0000001
+            ORDER BY p.code, i.name
+        """
+        project_stock = list_df(project_stock_sql)
+        if pd is not None and isinstance(project_stock, pd.DataFrame) and project_stock.empty:
+            st.info("No project stock recorded yet.")
+        elif isinstance(project_stock, list) and not project_stock:
+            st.info("No project stock recorded yet.")
+        else:
+            st.dataframe(project_stock, use_container_width=True)
 
     else:
         st.subheader("Settings & Help")
@@ -708,56 +834,202 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_cmd(args: argparse.Namespace) -> int:
-    if args.cmd == "init-db": init_db(); print("DB initialized."); return 0
-    if args.cmd == "add-warehouse":
-        ok, msg = upsert("warehouses", {"code": args.code, "name": args.name, "location": args.location}, unique_field="code"); print(msg); return 0 if ok else 1
-    if args.cmd == "list-warehouses":
-        rows = list_df("SELECT code, name, location FROM warehouses ORDER BY code"); print(rows.to_string(index=False) if pd is not None else rows); return 0
-    if args.cmd == "add-item":
-        ok, msg = add_item(Item(args.sku, args.name, args.unit, args.category, float(args.min_stock), args.notes)); print(msg); return 0 if ok else 1
-    if args.cmd == "add-supplier":
-        ok, msg = upsert("suppliers", {"name": args.name, "contact": args.contact, "phone": args.phone, "email": args.email}, unique_field="name"); print(msg); return 0 if ok else 1
-    if args.cmd == "add-project":
-        ok, msg = upsert("projects", {"code": args.code, "name": args.name, "location": args.location}, unique_field="code"); print(msg); return 0 if ok else 1
-    if args.cmd == "tx-in":
-        ok, msg = record_transaction(t_type='IN', sku=args.sku, qty=float(args.qty), supplier_name=args.supplier, unit_cost=args.unit_cost, reference=args.ref, remarks=args.remarks, warehouse_code=args.wh, allow_negative_stock=False); print(msg); return 0 if ok else 1
-    if args.cmd == "tx-out":
-        ok, msg = record_transaction(t_type='OUT', sku=args.sku, qty=float(args.qty), project_code=args.project, reference=args.ref, remarks=args.remarks, warehouse_code=args.wh, allow_negative_stock=bool(getattr(args, 'allow_negative', False))); print(msg); return 0 if ok else 1
-    if args.cmd == "transfer":
-        ok, msg = record_transaction(t_type='XFER_OUT', sku=args.sku, qty=float(args.qty), reference=args.ref, remarks=args.remarks, warehouse_code=args.src, allow_negative_stock=False)
-        if ok:
-            ok, msg = record_transaction(t_type='XFER_IN', sku=args.sku, qty=float(args.qty), reference=args.ref, remarks=args.remarks, warehouse_code=args.dst, allow_negative_stock=False)
-        print(msg); return 0 if ok else 1
-    if args.cmd == "po-create": ok, msg = po_create(args.po, args.supplier); print(msg); return 0 if ok else 1
-    if args.cmd == "po-add-item": ok, msg = po_add_item(args.po, args.sku, float(args.qty), args.unit_cost); print(msg); return 0 if ok else 1
-    if args.cmd == "receive": ok, msg = receive_against_po(args.po, args.sku, float(args.qty), args.wh); print(msg); return 0 if ok else 1
-    if args.cmd == "dr-out": ok, msg = record_transaction(t_type='OUT', sku=args.sku, qty=float(args.qty), project_code=args.project, reference=f"DR:{args.dr}", remarks=args.remarks, warehouse_code=args.wh, allow_negative_stock=False); print(msg); return 0 if ok else 1
-    if args.cmd == "stock":
-        rows = current_stock_by_item(by_warehouse=bool(getattr(args, 'by_warehouse', False)))
-        if pd is not None: print(rows.to_string(index=False))
-        else: print(rows)
+    if args.cmd == "init-db":
+        init_db()
+        print("DB initialized.")
         return 0
+
+    if args.cmd == "add-warehouse":
+        ok, msg = upsert(
+            "warehouses",
+            {"code": args.code, "name": args.name, "location": args.location},
+            unique_field="code",
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "list-warehouses":
+        rows = list_df("SELECT code, name, location FROM warehouses ORDER BY code")
+        if pd is not None:
+            print(rows.to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
+    if args.cmd == "add-item":
+        ok, msg = add_item(
+            Item(
+                args.sku,
+                args.name,
+                args.unit,
+                args.category,
+                float(args.min_stock),
+                args.notes,
+            )
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "add-supplier":
+        ok, msg = upsert(
+            "suppliers",
+            {
+                "name": args.name,
+                "contact": args.contact,
+                "phone": args.phone,
+                "email": args.email,
+            },
+            unique_field="name",
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "add-project":
+        ok, msg = upsert(
+            "projects",
+            {
+                "code": args.code,
+                "name": args.name,
+                "location": args.location,
+            },
+            unique_field="code",
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "tx-in":
+        ok, msg = record_transaction(
+            t_type="IN",
+            sku=args.sku,
+            qty=float(args.qty),
+            supplier_name=args.supplier,
+            unit_cost=args.unit_cost,
+            reference=args.ref,
+            remarks=args.remarks,
+            warehouse_code=args.wh,
+            allow_negative_stock=False,
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "tx-out":
+        ok, msg = record_transaction(
+            t_type="OUT",
+            sku=args.sku,
+            qty=float(args.qty),
+            project_code=args.project,
+            reference=args.ref,
+            remarks=args.remarks,
+            warehouse_code=args.wh,
+            allow_negative_stock=bool(getattr(args, "allow_negative", False)),
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "transfer":
+        ok, msg = record_transaction(
+            t_type="XFER_OUT",
+            sku=args.sku,
+            qty=float(args.qty),
+            reference=args.ref,
+            remarks=args.remarks,
+            warehouse_code=args.src,
+            allow_negative_stock=False,
+        )
+        if ok:
+            ok, msg = record_transaction(
+                t_type="XFER_IN",
+                sku=args.sku,
+                qty=float(args.qty),
+                reference=args.ref,
+                remarks=args.remarks,
+                warehouse_code=args.dst,
+                allow_negative_stock=False,
+            )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "po-create":
+        ok, msg = po_create(args.po, args.supplier)
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "po-add-item":
+        ok, msg = po_add_item(args.po, args.sku, float(args.qty), args.unit_cost)
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "receive":
+        ok, msg = receive_against_po(args.po, args.sku, float(args.qty), args.wh)
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "dr-out":
+        ok, msg = record_transaction(
+            t_type="OUT",
+            sku=args.sku,
+            qty=float(args.qty),
+            project_code=args.project,
+            reference=f"DR:{args.dr}",
+            remarks=args.remarks,
+            warehouse_code=args.wh,
+            allow_negative_stock=False,
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "stock":
+        rows = current_stock_by_item(by_warehouse=bool(getattr(args, "by_warehouse", False)))
+        if pd is not None:
+            print(rows.to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
     if args.cmd == "low-stock":
-        rows = low_stock_items(); print(rows.to_string(index=False) if pd is not None else rows); return 0
+        rows = low_stock_items()
+        if pd is not None:
+            print(rows.to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
     if args.cmd == "list-tx":
         with closing(get_conn()) as conn:
-            rows = [dict(r) for r in conn.execute("SELECT * FROM transactions ORDER BY ts DESC, id DESC LIMIT 200").fetchall()]
-        print(rows.to_string(index=False) if (pd is not None and hasattr(pd, 'DataFrame')) else rows); return 0
+            rows = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM transactions ORDER BY ts DESC, id DESC LIMIT 200"
+                ).fetchall()
+            ]
+        if pd is not None and hasattr(pd, "DataFrame"):
+            print(pd.DataFrame(rows).to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
     if args.cmd == "import":
         import_csv(args.path)
         return 0
+
     if args.cmd == "export":
         export_csv(args.folder)
         return 0
+
     return 0
 
 # -------------------------- Tests -------------------------- #
 
-def _run_tests():
-    import tempfile, unittest, os as _os
+def _run_tests() -> bool:
+    import os as _os
+    import tempfile
+    import unittest
+
     class InventoryTests(unittest.TestCase):
-        def setUp(self):
-            self.tmp = tempfile.NamedTemporaryFile(delete=False); self.db_path = self.tmp.name
+        def setUp(self) -> None:
+            self.tmp = tempfile.NamedTemporaryFile(delete=False)
+            self.tmp.close()
+            self.db_path = self.tmp.name
             init_db(self.db_path)
             add_item(Item("CEM-40kg", "Cement 40kg", "bag", min_stock=10), db_path=self.db_path)
             add_item(Item("RBR-10mm", "Rebar 10mm", "pc", min_stock=20), db_path=self.db_path)
@@ -765,16 +1037,159 @@ def _run_tests():
             upsert("projects", {"code": "PJ-001", "name": "Bungalow"}, unique_field="code", db_path=self.db_path)
             upsert("warehouses", {"code": "SHELL", "name": "Main Shell"}, unique_field="code", db_path=self.db_path)
             upsert("warehouses", {"code": "SAT", "name": "Satellite"}, unique_field="code", db_path=self.db_path)
-        def tearDown(self):
-            try: _os.unlink(self.db_path)
-            except Exception: pass
-        def test_in_out_per_warehouse_blocking(self):
-            ok, _ = record_transaction(t_type='IN', sku='CEM-40kg', qty=50, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
-            self.assertTrue(ok)
-            ok, _ = record_transaction(t_type='OUT', sku='CEM-40kg', qty=20, project_code='PJ-001', warehouse_code='SHELL', db_path=self.db_path)
-            self.assertTrue(ok)
-            ok, msg = record_transaction(t_type='OUT', sku='CEM-40kg', qty=1, project_code='PJ-001', warehouse_code='SAT', db_path=self.db_path)
-            self.assertFalse(ok); self.assertIn('Insufficient stock', msg)
-        def test_transfer_between_warehouses(self):
-            record_transaction(t_type='IN', sku='RBR-10mm', qty=10, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
-      
+
+        def tearDown(self) -> None:
+            try:
+                _os.unlink(self.db_path)
+            except Exception:
+                pass
+
+        def test_in_out_per_warehouse_blocking(self) -> None:
+            ok, msg = record_transaction(
+                t_type="IN",
+                sku="CEM-40kg",
+                qty=50,
+                supplier_name="ABC Supply",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="OUT",
+                sku="CEM-40kg",
+                qty=20,
+                project_code="PJ-001",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="OUT",
+                sku="CEM-40kg",
+                qty=1,
+                project_code="PJ-001",
+                warehouse_code="SAT",
+                db_path=self.db_path,
+            )
+            self.assertFalse(ok)
+            self.assertIn("Insufficient stock", msg)
+
+        def test_transfer_between_warehouses(self) -> None:
+            ok, msg = record_transaction(
+                t_type="IN",
+                sku="RBR-10mm",
+                qty=10,
+                supplier_name="ABC Supply",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="XFER_OUT",
+                sku="RBR-10mm",
+                qty=4,
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="XFER_IN",
+                sku="RBR-10mm",
+                qty=4,
+                warehouse_code="SAT",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            with closing(get_conn(self.db_path)) as conn:
+                item_id = conn.execute("SELECT id FROM items WHERE sku=?", ("RBR-10mm",)).fetchone()["id"]
+                shell_id = conn.execute("SELECT id FROM warehouses WHERE code=?", ("SHELL",)).fetchone()["id"]
+                sat_id = conn.execute("SELECT id FROM warehouses WHERE code=?", ("SAT",)).fetchone()["id"]
+                shell_stock = _warehouse_stock(conn, int(item_id), int(shell_id))
+                sat_stock = _warehouse_stock(conn, int(item_id), int(sat_id))
+            self.assertEqual(shell_stock, 6.0)
+            self.assertEqual(sat_stock, 4.0)
+
+        def test_receive_against_po_closes_when_complete(self) -> None:
+            ok, msg = po_create("PO-001", "ABC Supply", db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            ok, msg = po_add_item("PO-001", "CEM-40kg", 30, 250.0, db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            ok, msg = receive_against_po("PO-001", "CEM-40kg", 20, "SHELL", db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            with closing(get_conn(self.db_path)) as conn:
+                status = conn.execute(
+                    "SELECT status FROM purchase_orders WHERE po_no=?",
+                    ("PO-001",),
+                ).fetchone()["status"]
+                received = conn.execute(
+                    "SELECT qty_received FROM purchase_order_items WHERE po_id=(SELECT id FROM purchase_orders WHERE po_no=?)",
+                    ("PO-001",),
+                ).fetchone()["qty_received"]
+            self.assertEqual(status, "OPEN")
+            self.assertEqual(float(received), 20.0)
+            ok, msg = receive_against_po("PO-001", "CEM-40kg", 10, "SHELL", db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            with closing(get_conn(self.db_path)) as conn:
+                status = conn.execute(
+                    "SELECT status FROM purchase_orders WHERE po_no=?",
+                    ("PO-001",),
+                ).fetchone()["status"]
+                received = conn.execute(
+                    "SELECT qty_received FROM purchase_order_items WHERE po_id=(SELECT id FROM purchase_orders WHERE po_no=?)",
+                    ("PO-001",),
+                ).fetchone()["qty_received"]
+                item_id = conn.execute("SELECT id FROM items WHERE sku=?", ("CEM-40kg",)).fetchone()["id"]
+                shell_id = conn.execute("SELECT id FROM warehouses WHERE code=?", ("SHELL",)).fetchone()["id"]
+                shell_stock = _warehouse_stock(conn, int(item_id), int(shell_id))
+            self.assertEqual(status, "CLOSED")
+            self.assertEqual(float(received), 30.0)
+            self.assertEqual(shell_stock, 30.0)
+
+        def test_low_stock_reporting(self) -> None:
+            ok, msg = record_transaction(
+                t_type="IN",
+                sku="CEM-40kg",
+                qty=5,
+                supplier_name="ABC Supply",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            lows = low_stock_items(db_path=self.db_path)
+            if pd is not None and hasattr(lows, "__getitem__") and hasattr(lows, "to_dict"):
+                sku_list = set(lows["sku"].tolist()) if len(lows) else set()
+            else:
+                sku_list = {row["sku"] for row in lows}
+            self.assertIn("CEM-40kg", sku_list)
+
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(InventoryTests)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return result.wasSuccessful()
+
+
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.test:
+        return 0 if _run_tests() else 1
+
+    if args.cmd == "init-db":
+        init_db()
+        print("DB initialized.")
+        return 0
+
+    if args.cmd:
+        init_db()
+        return run_cmd(args)
+
+    if _STREAMLIT_AVAILABLE:
+        run_streamlit_ui()
+        return 0
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
