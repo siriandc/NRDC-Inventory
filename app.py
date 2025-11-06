@@ -559,6 +559,172 @@ def run_streamlit_ui():  # pragma: no cover
                                     warehouse_code=dest_val, allow_negative_stock=False)
                     if msg:
                         (st.success if ok else st.error)(msg)
+            label = f"Project: {code}" + (f" — {name}" if name else "")
+            entity_options.append({"type": "project", "value": code, "label": label})
+
+        def _find_index(value: str, kind: str) -> int:
+            for idx, opt in enumerate(entity_options):
+                if opt["type"] == kind and opt["value"] == value:
+                    return idx
+            return 0 if entity_options else 0
+
+        default_wh_idx = _find_index(DEFAULT_WAREHOUSE_CODE, "warehouse")
+
+        def _fmt_choice(opt: dict[str, str]) -> str:
+            return opt.get("label", "")
+
+        with st.form("tx_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                mode = st.selectbox("Mode", ["IN", "OUT", "TRANSFER"], index=0)
+                item_name = st.selectbox("Item", options=(items_df["name"].tolist() if pd is not None else []))
+                qty = st.number_input("Quantity", min_value=0.0, step=1.0, value=0.0)
+            with c2:
+                origin_choice = st.selectbox("Origin", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
+                destination_choice = st.selectbox("Destination", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
+            with c3:
+                ref = st.text_input("Reference (PO/DR/JO)")
+            if st.form_submit_button("Save"):
+                if pd is not None and hasattr(items_df, "loc"):
+                    sku_series = items_df.loc[items_df["name"] == item_name, "sku"]
+                    sku = sku_series.iloc[0] if not sku_series.empty else None
+                else:
+                    sku = next((row.get("sku") for row in items_df if row.get("name") == item_name), None) if item_name else None
+
+                if not sku:
+                    st.error("Unable to determine SKU for the selected item.")
+                else:
+                    origin_type = origin_choice.get("type") if isinstance(origin_choice, dict) else None
+                    origin_val = origin_choice.get("value") if isinstance(origin_choice, dict) else None
+                    dest_type = destination_choice.get("type") if isinstance(destination_choice, dict) else None
+                    dest_val = destination_choice.get("value") if isinstance(destination_choice, dict) else None
+
+                    ok = False
+                    msg = ""
+
+                    supplier_name = None
+                    project_code = None
+
+                    if mode == "IN":
+                        if dest_type != "warehouse" or not dest_val:
+                            st.error("Destination must be a warehouse for IN transactions.")
+                        else:
+                            if origin_type == "supplier":
+                                supplier_name = origin_val
+                            elif origin_type == "project":
+                                project_code = origin_val
+                            ok, msg = record_transaction(
+                                t_type='IN', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=dest_val, allow_negative_stock=False)
+                    elif mode == "OUT":
+                        if origin_type != "warehouse" or not origin_val:
+                            st.error("Origin must be a warehouse for OUT transactions.")
+                        else:
+                            if dest_type == "project":
+                                project_code = dest_val
+                            elif dest_type == "supplier":
+                                supplier_name = dest_val
+                            ok, msg = record_transaction(
+                                t_type='OUT', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                    else:
+                        if origin_type != "warehouse" or dest_type != "warehouse" or not origin_val or not dest_val:
+                            st.error("Transfers require both origin and destination to be warehouses.")
+                        else:
+                            ok, msg = record_transaction(
+                                t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                            if ok:
+                                ok, msg = record_transaction(
+                                    t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None,
+                                    warehouse_code=dest_val, allow_negative_stock=False)
+                    if msg:
+                        (st.success if ok else st.error)(msg)
+            label = f"Project: {code}" + (f" — {name}" if name else "")
+            entity_options.append({"type": "project", "value": code, "label": label})
+
+        def _find_index(value: str, kind: str) -> int:
+            for idx, opt in enumerate(entity_options):
+                if opt["type"] == kind and opt["value"] == value:
+                    return idx
+            return 0 if entity_options else 0
+
+        default_wh_idx = _find_index(DEFAULT_WAREHOUSE_CODE, "warehouse")
+
+        def _fmt_choice(opt: dict[str, str]) -> str:
+            return opt.get("label", "")
+
+        with st.form("tx_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                mode = st.selectbox("Mode", ["IN", "OUT", "TRANSFER"], index=0)
+                item_name = st.selectbox("Item", options=(items_df["name"].tolist() if pd is not None else []))
+                qty = st.number_input("Quantity", min_value=0.0, step=1.0, value=0.0)
+            with c2:
+                origin_choice = st.selectbox("Origin", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
+                destination_choice = st.selectbox("Destination", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
+            with c3:
+                ref = st.text_input("Reference (PO/DR/JO)")
+            if st.form_submit_button("Save"):
+                if pd is not None and hasattr(items_df, "loc"):
+                    sku_series = items_df.loc[items_df["name"] == item_name, "sku"]
+                    sku = sku_series.iloc[0] if not sku_series.empty else None
+                else:
+                    sku = next((row.get("sku") for row in items_df if row.get("name") == item_name), None) if item_name else None
+
+                if not sku:
+                    st.error("Unable to determine SKU for the selected item.")
+                else:
+                    origin_type = origin_choice.get("type") if isinstance(origin_choice, dict) else None
+                    origin_val = origin_choice.get("value") if isinstance(origin_choice, dict) else None
+                    dest_type = destination_choice.get("type") if isinstance(destination_choice, dict) else None
+                    dest_val = destination_choice.get("value") if isinstance(destination_choice, dict) else None
+
+                    ok = False
+                    msg = ""
+
+                    supplier_name = None
+                    project_code = None
+
+                    if mode == "IN":
+                        if dest_type != "warehouse" or not dest_val:
+                            st.error("Destination must be a warehouse for IN transactions.")
+                        else:
+                            if origin_type == "supplier":
+                                supplier_name = origin_val
+                            elif origin_type == "project":
+                                project_code = origin_val
+                            ok, msg = record_transaction(
+                                t_type='IN', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=dest_val, allow_negative_stock=False)
+                    elif mode == "OUT":
+                        if origin_type != "warehouse" or not origin_val:
+                            st.error("Origin must be a warehouse for OUT transactions.")
+                        else:
+                            if dest_type == "project":
+                                project_code = dest_val
+                            elif dest_type == "supplier":
+                                supplier_name = dest_val
+                            ok, msg = record_transaction(
+                                t_type='OUT', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                    else:
+                        if origin_type != "warehouse" or dest_type != "warehouse" or not origin_val or not dest_val:
+                            st.error("Transfers require both origin and destination to be warehouses.")
+                        else:
+                            ok, msg = record_transaction(
+                                t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                            if ok:
+                                ok, msg = record_transaction(
+                                    t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None,
+                                    warehouse_code=dest_val, allow_negative_stock=False)
+                    if msg:
+                        (st.success if ok else st.error)(msg)
                         
     elif page == "PO/Receiving":
         st.subheader("Purchase Orders & Receiving")
@@ -639,6 +805,49 @@ def run_streamlit_ui():  # pragma: no cover
         st.caption("Transactions CSV (optional new cols): ts,type,sku,qty,unit_cost,warehouse_code,supplier_name,project_code,reference,remarks")
         if pd is not None:
             st.dataframe(list_df("SELECT * FROM transactions ORDER BY ts DESC, id DESC").head(100), use_container_width=True)
+
+        st.markdown("#### Entity ID Reference")
+        entity_lookup_sql = """
+            SELECT 'Supplier' AS entity, id, NULL AS code, name
+            FROM suppliers
+            UNION ALL
+            SELECT 'Project' AS entity, id, code, name
+            FROM projects
+            UNION ALL
+            SELECT 'Warehouse' AS entity, id, code, name
+            FROM warehouses
+            ORDER BY entity, name
+        """
+        st.dataframe(list_df(entity_lookup_sql), use_container_width=True)
+
+        st.markdown("#### Current Stock per Project")
+        project_stock_sql = """
+            SELECT
+                p.code AS project_code,
+                p.name AS project_name,
+                i.sku,
+                i.name AS item_name,
+                ROUND(SUM(CASE
+                    WHEN t.type = 'OUT' THEN t.qty
+                    WHEN t.type = 'IN' THEN -t.qty
+                    ELSE 0 END), 4) AS qty_on_project
+            FROM projects p
+            LEFT JOIN transactions t ON t.project_id = p.id
+            LEFT JOIN items i ON i.id = t.item_id
+            GROUP BY p.id, p.code, p.name, i.sku, i.name
+            HAVING ABS(SUM(CASE
+                    WHEN t.type = 'OUT' THEN t.qty
+                    WHEN t.type = 'IN' THEN -t.qty
+                    ELSE 0 END)) > 0.0000001
+            ORDER BY p.code, i.name
+        """
+        project_stock = list_df(project_stock_sql)
+        if pd is not None and isinstance(project_stock, pd.DataFrame) and project_stock.empty:
+            st.info("No project stock recorded yet.")
+        elif isinstance(project_stock, list) and not project_stock:
+            st.info("No project stock recorded yet.")
+        else:
+            st.dataframe(project_stock, use_container_width=True)
 
     else:
         st.subheader("Settings & Help")
