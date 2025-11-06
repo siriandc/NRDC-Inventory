@@ -707,7 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def run_cmd(args: argparse.Namespace) -> int:␊
+def run_cmd(args: argparse.Namespace) -> int:
     if args.cmd == "init-db": init_db(); print("DB initialized."); return 
     if args.cmd == "add-warehouse":
         ok, msg = upsert("warehouses", {"code": args.code, "name": args.name, "location": args.location}, unique_field="code"); print(msg); return 0 if ok else 1
