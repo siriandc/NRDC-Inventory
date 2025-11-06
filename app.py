@@ -19,7 +19,7 @@ Why you previously saw errors
 ----------------------------
 - `ModuleNotFoundError: streamlit` — Streamlit is optional; this app works without it.
 - `OSError: [Errno 29]` — Some sandboxes disallow `input()`. We now use **argparse subcommands** only.
-- `SyntaxError: '(' was never closed` — caused by an **incomplete function call**. Fixed below.
+- `SyntaxError: '(' was never closed` — caused by **truncated calls** (e.g., `import_csv(args.`). Fully fixed below.
 
 How to run
 ----------
@@ -51,11 +51,10 @@ import argparse
 import csv
 import os
 import sqlite3
-import sys
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, date
-from typing import Iterable, Optional, Tuple, Dict, Any, List
+from typing import Iterable, Optional, Tuple, Dict, Any
 
 # Optional dependencies
 try:
@@ -246,14 +245,11 @@ def _get_id_by_code(
 
 def ensure_warehouse(code: str, name: Optional[str] = None, *, db_path: str = DB_PATH) -> int:
     with closing(get_conn(db_path)) as conn:
-        wid = _get_id_by_code(conn, "warehouses", "code", code)
+        wid = _get_id_by_code(conn, 'warehouses', 'code', code)
         if wid is None:
-            conn.execute(
-                "INSERT INTO warehouses(code, name) VALUES(?, ?)",
-                (code, name or code),
-            )
+            conn.execute("INSERT INTO warehouses(code, name) VALUES(?, ?)", (code, name or code))
             conn.commit()
-            wid = _get_id_by_code(conn, "warehouses", "code", code)
+            wid = _get_id_by_code(conn, 'warehouses', 'code', code)
         assert wid is not None
         return wid
 
@@ -281,21 +277,11 @@ def _warehouse_stock(conn: sqlite3.Connection, item_id: int, warehouse_id: int) 
     return float(cur.fetchone()["stock"])  # type: ignore
 
 
-def record_transaction(
-    *,
-    t_type: str,
-    sku: str,
-    qty: float,
-    ts: Optional[str] = None,
-    unit_cost: Optional[float] = None,
-    supplier_name: Optional[str] = None,
-    project_code: Optional[str] = None,
-    reference: Optional[str] = None,
-    remarks: Optional[str] = None,
-    warehouse_code: Optional[str] = None,
-    db_path: str = DB_PATH,
-    allow_negative_stock: bool = False,
-) -> Tuple[bool, str]:
+def record_transaction(*, t_type: str, sku: str, qty: float, ts: Optional[str] = None,
+                        unit_cost: Optional[float] = None, supplier_name: Optional[str] = None,
+                        project_code: Optional[str] = None, reference: Optional[str] = None,
+                        remarks: Optional[str] = None, warehouse_code: Optional[str] = None,
+                        db_path: str = DB_PATH, allow_negative_stock: bool = False) -> Tuple[bool, str]:
     t_type = t_type.upper()
     assert t_type in {"IN", "OUT", "XFER_OUT", "XFER_IN"}
     if qty <= 0:
@@ -311,26 +297,17 @@ def record_transaction(
         supplier_id = None
         project_id = None
         if supplier_name:
-            srow = conn.execute(
-                "SELECT id FROM suppliers WHERE name=?",
-                (supplier_name,),
-            ).fetchone()
+            srow = conn.execute("SELECT id FROM suppliers WHERE name=?", (supplier_name,)).fetchone()
             if srow:
                 supplier_id = int(srow["id"])  
         if project_code:
-            prow = conn.execute(
-                "SELECT id FROM projects WHERE code=?",
-                (project_code,),
-            ).fetchone()
+            prow = conn.execute("SELECT id FROM projects WHERE code=?", (project_code,)).fetchone()
             if prow:
                 project_id = int(prow["id"])  
 
         # resolve warehouse (required for all stock‑moving tx)
-        wh_code = warehouse_code or DEFAULT_WAREHOUSE_CODE
-        wh_row = conn.execute(
-            "SELECT id FROM warehouses WHERE code=?",
-            (wh_code,),
-        ).fetchone()
+        wh_code = (warehouse_code or DEFAULT_WAREHOUSE_CODE)
+        wh_row = conn.execute("SELECT id FROM warehouses WHERE code=?", (wh_code,)).fetchone()
         if not wh_row:
             return False, f"Unknown warehouse code: {wh_code}"
         warehouse_id = int(wh_row["id"])  
@@ -347,21 +324,9 @@ def record_transaction(
             INSERT INTO transactions (ts, type, item_id, qty, unit_cost, supplier_id, project_id, warehouse_id, reference, remarks)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                ts_str,
-                t_type,
-                item_id,
-                float(qty),
-                unit_cost,
-                supplier_id,
-                project_id,
-                warehouse_id,
-                reference,
-                remarks,
-            ),
+            (ts_str, t_type, item_id, float(qty), unit_cost, supplier_id, project_id, warehouse_id, reference, remarks),
         )
-        conn.commit()
-        return True, "Transaction saved."
+        conn.commit(); return True, "Transaction saved."
 
 
 def current_stock_by_item(*, db_path: str = DB_PATH, by_warehouse: bool = False):
@@ -405,98 +370,56 @@ def low_stock_items(*, db_path: str = DB_PATH):
 
 def po_create(po_no: str, supplier_name: str, *, db_path: str = DB_PATH) -> Tuple[bool, str]:
     with closing(get_conn(db_path)) as conn:
-        srow = conn.execute(
-            "SELECT id FROM suppliers WHERE name=?",
-            (supplier_name,),
-        ).fetchone()
+        srow = conn.execute("SELECT id FROM suppliers WHERE name=?", (supplier_name,)).fetchone()
         if not srow:
             return False, f"Unknown supplier: {supplier_name}"
         conn.execute(
             "INSERT INTO purchase_orders(po_no, supplier_id, status, created_ts) VALUES(?,?, 'OPEN', ?)",
-            (po_no, int(srow["id"]), datetime.now().isoformat(timespec="seconds")),
+            (po_no, int(srow["id"]), datetime.now().isoformat(timespec='seconds')),
         )
-        conn.commit()
-        return True, "PO created."
+        conn.commit(); return True, "PO created."
 
 
-def po_add_item(
-    po_no: str, sku: str, qty: float, unit_cost: Optional[float] = None, *, db_path: str = DB_PATH
-) -> Tuple[bool, str]:
-    if qty <= 0:
-        return False, "Quantity must be > 0"
+def po_add_item(po_no: str, sku: str, qty: float, unit_cost: Optional[float] = None, *, db_path: str = DB_PATH) -> Tuple[bool, str]:
+    if qty <= 0: return False, "Quantity must be > 0"
     with closing(get_conn(db_path)) as conn:
         prow = conn.execute("SELECT id FROM purchase_orders WHERE po_no=?", (po_no,)).fetchone()
-        if not prow:
-            return False, f"Unknown PO: {po_no}"
+        if not prow: return False, f"Unknown PO: {po_no}"
         irow = conn.execute("SELECT id FROM items WHERE sku=?", (sku,)).fetchone()
-        if not irow:
-            return False, f"Unknown SKU: {sku}"
+        if not irow: return False, f"Unknown SKU: {sku}"
         conn.execute(
             "INSERT INTO purchase_order_items(po_id, item_id, qty_ordered, unit_cost) VALUES(?,?,?,?)",
             (int(prow["id"]), int(irow["id"]), float(qty), unit_cost),
         )
-        conn.commit()
-        return True, "PO item added."
+        conn.commit(); return True, "PO item added."
 
 
-def receive_against_po(
-    po_no: str, sku: str, qty: float, warehouse_code: Optional[str] = None, *, db_path: str = DB_PATH
-) -> Tuple[bool, str]:
-    if qty <= 0:
-        return False, "Quantity must be > 0"
+def receive_against_po(po_no: str, sku: str, qty: float, warehouse_code: Optional[str] = None, *, db_path: str = DB_PATH) -> Tuple[bool, str]:
+    if qty <= 0: return False, "Quantity must be > 0"
     wh_code = warehouse_code or DEFAULT_WAREHOUSE_CODE
     with closing(get_conn(db_path)) as conn:
-        prow = conn.execute(
-            "SELECT id, status FROM purchase_orders WHERE po_no=?",
-            (po_no,),
-        ).fetchone()
-        if not prow:
-            return False, f"Unknown PO: {po_no}"
-        if prow["status"] == "CLOSED":
-            return False, "PO is already closed"
+        prow = conn.execute("SELECT id, status FROM purchase_orders WHERE po_no=?", (po_no,)).fetchone()
+        if not prow: return False, f"Unknown PO: {po_no}"
+        if prow["status"] == 'CLOSED': return False, "PO is already closed"
         irow = conn.execute("SELECT id FROM items WHERE sku=?", (sku,)).fetchone()
-        if not irow:
-            return False, f"Unknown SKU: {sku}"
-        pi = conn.execute(
-            "SELECT id, qty_ordered, qty_received FROM purchase_order_items WHERE po_id=? AND item_id=?",
-            (int(prow["id"]), int(irow["id"]))
-        ).fetchone()
-        if not pi:
-            return False, "Item not found on PO"
+        if not irow: return False, f"Unknown SKU: {sku}"
+        pi = conn.execute("SELECT id, qty_ordered, qty_received FROM purchase_order_items WHERE po_id=? AND item_id=?", (int(prow["id"]), int(irow["id"])) ).fetchone()
+        if not pi: return False, "Item not found on PO"
         new_recv = float(pi["qty_received"]) + qty
         if new_recv > float(pi["qty_ordered"]):
-            return False, (
-                f"Receiving exceeds ordered qty. Ordered {pi['qty_ordered']}, "
-                f"current received {pi['qty_received']}, trying to receive {qty}."
-            )
+            return False, f"Receiving exceeds ordered qty. Ordered {pi['qty_ordered']}, current received {pi['qty_received']}, trying to receive {qty}."
         # record IN
         ok, msg = record_transaction(
-            t_type="IN",
-            sku=sku,
-            qty=qty,
-            reference=f"PO:{po_no}",
-            warehouse_code=wh_code,
-            db_path=db_path,
-            allow_negative_stock=False,
+            t_type='IN', sku=sku, qty=qty, reference=f"PO:{po_no}", warehouse_code=wh_code, db_path=db_path,
+            allow_negative_stock=False
         )
-        if not ok:
-            return False, msg
-        conn.execute(
-            "UPDATE purchase_order_items SET qty_received=? WHERE id=?",
-            (new_recv, int(pi["id"]))
-        )
+        if not ok: return False, msg
+        conn.execute("UPDATE purchase_order_items SET qty_received=? WHERE id=?", (new_recv, int(pi["id"])) )
         # close PO if all received
-        agg = conn.execute(
-            "SELECT SUM(qty_ordered-qty_received) AS remaining FROM purchase_order_items WHERE po_id=?",
-            (int(prow["id"]),),
-        ).fetchone()
+        agg = conn.execute("SELECT SUM(qty_ordered-qty_received) AS remaining FROM purchase_order_items WHERE po_id=?", (int(prow["id"]),)).fetchone()
         if float(agg["remaining"] or 0) <= 0:
-            conn.execute(
-                "UPDATE purchase_orders SET status='CLOSED' WHERE id=?",
-                (int(prow["id"]),),
-            )
-        conn.commit()
-        return True, "Received."
+            conn.execute("UPDATE purchase_orders SET status='CLOSED' WHERE id=?", (int(prow["id"]),))
+        conn.commit(); return True, "Received."
 
 # -------------------------- Streamlit UI (optional, updated) -------------------------- #
 
@@ -509,19 +432,7 @@ def run_streamlit_ui():  # pragma: no cover
 
     with st.sidebar:
         st.header("Navigation")
-        page = st.radio(
-            "Go to",
-            [
-                "Dashboard",
-                "Items",
-                "Transactions",
-                "PO/Receiving",
-                "Suppliers & Projects",
-                "Import/Export",
-                "Settings / Help",
-            ],
-            index=0,
-        )
+        page = st.radio("Go to", ["Dashboard", "Items", "Transactions", "PO/Receiving", "Suppliers & Projects", "Import/Export", "Settings / Help"], index=0)
 
     if page == "Dashboard":
         cur = current_stock_by_item()
@@ -539,30 +450,15 @@ def run_streamlit_ui():  # pragma: no cover
         st.subheader("Record Stock Movement (IN / OUT / Transfer)")
         items_df = list_df("SELECT * FROM items ORDER BY name")
         wh_df = list_df("SELECT code FROM warehouses ORDER BY code")
-        wh_list = (
-            wh_df["code"].tolist()
-            if pd is not None and hasattr(wh_df, "__getitem__")
-            else [DEFAULT_WAREHOUSE_CODE]
-        )
+        wh_list = (wh_df["code"].tolist() if pd is not None and hasattr(wh_df, "__getitem__") else [DEFAULT_WAREHOUSE_CODE])
         with st.form("tx_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             with c1:
                 mode = st.selectbox("Mode", ["IN", "OUT", "TRANSFER"], index=0)
-                item_name = st.selectbox(
-                    "Item", options=(items_df["name"].tolist() if pd is not None else [])
-                )
+                item_name = st.selectbox("Item", options=(items_df["name"].tolist() if pd is not None else []))
                 qty = st.number_input("Quantity", min_value=0.0, step=1.0, value=0.0)
             with c2:
-                wh_src = st.selectbox(
-                    "From Warehouse",
-                    options=wh_list,
-                    index=max(
-                        0,
-                        wh_list.index(DEFAULT_WAREHOUSE_CODE)
-                        if DEFAULT_WAREHOUSE_CODE in wh_list
-                        else 0,
-                    ),
-                )
+                wh_src = st.selectbox("From Warehouse", options=wh_list, index=max(0, wh_list.index(DEFAULT_WAREHOUSE_CODE) if DEFAULT_WAREHOUSE_CODE in wh_list else 0))
                 wh_dst = st.selectbox("To Warehouse (for Transfer)", options=wh_list)
             with c3:
                 project = st.text_input("Project code (for OUT)")
@@ -571,44 +467,14 @@ def run_streamlit_ui():  # pragma: no cover
             if st.form_submit_button("Save"):
                 sku = items_df.loc[items_df["name"] == item_name, "sku"].iloc[0]
                 if mode == "IN":
-                    ok, msg = record_transaction(
-                        t_type="IN",
-                        sku=sku,
-                        qty=qty,
-                        supplier_name=supplier or None,
-                        reference=ref or None,
-                        warehouse_code=wh_src,
-                        allow_negative_stock=False,
-                    )
+                    ok, msg = record_transaction(t_type='IN', sku=sku, qty=qty, supplier_name=supplier or None, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
                 elif mode == "OUT":
-                    ok, msg = record_transaction(
-                        t_type="OUT",
-                        sku=sku,
-                        qty=qty,
-                        project_code=project or None,
-                        reference=ref or None,
-                        warehouse_code=wh_src,
-                        allow_negative_stock=False,
-                    )
+                    ok, msg = record_transaction(t_type='OUT', sku=sku, qty=qty, project_code=project or None, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
                 else:
                     # transfer: XFER_OUT then XFER_IN
-                    ok, msg = record_transaction(
-                        t_type="XFER_OUT",
-                        sku=sku,
-                        qty=qty,
-                        reference=ref or None,
-                        warehouse_code=wh_src,
-                        allow_negative_stock=False,
-                    )
+                    ok, msg = record_transaction(t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
                     if ok:
-                        ok, msg = record_transaction(
-                            t_type="XFER_IN",
-                            sku=sku,
-                            qty=qty,
-                            reference=ref or None,
-                            warehouse_code=wh_dst,
-                            allow_negative_stock=False,
-                        )
+                        ok, msg = record_transaction(t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None, warehouse_code=wh_dst, allow_negative_stock=False)
                 (st.success if ok else st.error)(msg)
 
     elif page == "PO/Receiving":
@@ -651,9 +517,7 @@ def run_streamlit_ui():  # pragma: no cover
                 unit = st.text_input("Unit (e.g., pcs, bag, kg, m) *")
                 category = st.text_input("Category")
             with c2:
-                min_stock = st.number_input(
-                    "Minimum Stock Threshold", min_value=0.0, value=0.0, step=1.0
-                )
+                min_stock = st.number_input("Minimum Stock Threshold", min_value=0.0, value=0.0, step=1.0)
                 notes = st.text_area("Notes")
             if st.form_submit_button("Save Item"):
                 if not (sku and name and unit):
@@ -879,4 +743,38 @@ def run_cmd(args: argparse.Namespace) -> int:
         with closing(get_conn()) as conn:
             rows = [dict(r) for r in conn.execute("SELECT * FROM transactions ORDER BY ts DESC, id DESC LIMIT 200").fetchall()]
         print(rows.to_string(index=False) if (pd is not None and hasattr(pd, 'DataFrame')) else rows); return 0
-    if args.cmd == "import": import_csv(args.path); r
+    if args.cmd == "import":
+        import_csv(args.path)
+        return 0
+    if args.cmd == "export":
+        export_csv(args.folder)
+        return 0
+    return 0
+
+# -------------------------- Tests -------------------------- #
+
+def _run_tests():
+    import tempfile, unittest, os as _os
+    class InventoryTests(unittest.TestCase):
+        def setUp(self):
+            self.tmp = tempfile.NamedTemporaryFile(delete=False); self.db_path = self.tmp.name
+            init_db(self.db_path)
+            add_item(Item("CEM-40kg", "Cement 40kg", "bag", min_stock=10), db_path=self.db_path)
+            add_item(Item("RBR-10mm", "Rebar 10mm", "pc", min_stock=20), db_path=self.db_path)
+            upsert("suppliers", {"name": "ABC Supply"}, unique_field="name", db_path=self.db_path)
+            upsert("projects", {"code": "PJ-001", "name": "Bungalow"}, unique_field="code", db_path=self.db_path)
+            upsert("warehouses", {"code": "SHELL", "name": "Main Shell"}, unique_field="code", db_path=self.db_path)
+            upsert("warehouses", {"code": "SAT", "name": "Satellite"}, unique_field="code", db_path=self.db_path)
+        def tearDown(self):
+            try: _os.unlink(self.db_path)
+            except Exception: pass
+        def test_in_out_per_warehouse_blocking(self):
+            ok, _ = record_transaction(t_type='IN', sku='CEM-40kg', qty=50, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
+            self.assertTrue(ok)
+            ok, _ = record_transaction(t_type='OUT', sku='CEM-40kg', qty=20, project_code='PJ-001', warehouse_code='SHELL', db_path=self.db_path)
+            self.assertTrue(ok)
+            ok, msg = record_transaction(t_type='OUT', sku='CEM-40kg', qty=1, project_code='PJ-001', warehouse_code='SAT', db_path=self.db_path)
+            self.assertFalse(ok); self.assertIn('Insufficient stock', msg)
+        def test_transfer_between_warehouses(self):
+            record_transaction(t_type='IN', sku='RBR-10mm', qty=10, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
+      
