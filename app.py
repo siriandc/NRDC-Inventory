@@ -707,8 +707,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def run_cmd(args: argparse.Namespace) -> int:
-    if args.cmd == "init-db": init_db(); print("DB initialized."); return 0
+def run_cmd(args: argparse.Namespace) -> int:␊
+    if args.cmd == "init-db": init_db(); print("DB initialized."); return 0␊
     if args.cmd == "add-warehouse":
         ok, msg = upsert("warehouses", {"code": args.code, "name": args.name, "location": args.location}, unique_field="code"); print(msg); return 0 if ok else 1
     if args.cmd == "list-warehouses":
@@ -753,11 +753,16 @@ def run_cmd(args: argparse.Namespace) -> int:
 
 # -------------------------- Tests -------------------------- #
 
-def _run_tests():
-    import tempfile, unittest, os as _os
+def _run_tests() -> bool:
+    import os as _os
+    import tempfile
+    import unittest
+
     class InventoryTests(unittest.TestCase):
-        def setUp(self):
-            self.tmp = tempfile.NamedTemporaryFile(delete=False); self.db_path = self.tmp.name
+        def setUp(self) -> None:
+            self.tmp = tempfile.NamedTemporaryFile(delete=False)
+            self.tmp.close()
+            self.db_path = self.tmp.name
             init_db(self.db_path)
             add_item(Item("CEM-40kg", "Cement 40kg", "bag", min_stock=10), db_path=self.db_path)
             add_item(Item("RBR-10mm", "Rebar 10mm", "pc", min_stock=20), db_path=self.db_path)
@@ -765,16 +770,159 @@ def _run_tests():
             upsert("projects", {"code": "PJ-001", "name": "Bungalow"}, unique_field="code", db_path=self.db_path)
             upsert("warehouses", {"code": "SHELL", "name": "Main Shell"}, unique_field="code", db_path=self.db_path)
             upsert("warehouses", {"code": "SAT", "name": "Satellite"}, unique_field="code", db_path=self.db_path)
-        def tearDown(self):
-            try: _os.unlink(self.db_path)
-            except Exception: pass
-        def test_in_out_per_warehouse_blocking(self):
-            ok, _ = record_transaction(t_type='IN', sku='CEM-40kg', qty=50, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
-            self.assertTrue(ok)
-            ok, _ = record_transaction(t_type='OUT', sku='CEM-40kg', qty=20, project_code='PJ-001', warehouse_code='SHELL', db_path=self.db_path)
-            self.assertTrue(ok)
-            ok, msg = record_transaction(t_type='OUT', sku='CEM-40kg', qty=1, project_code='PJ-001', warehouse_code='SAT', db_path=self.db_path)
-            self.assertFalse(ok); self.assertIn('Insufficient stock', msg)
-        def test_transfer_between_warehouses(self):
-            record_transaction(t_type='IN', sku='RBR-10mm', qty=10, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
-      
+
+        def tearDown(self) -> None:
+            try:
+                _os.unlink(self.db_path)
+            except Exception:
+                pass
+
+        def test_in_out_per_warehouse_blocking(self) -> None:
+                        ok, msg = record_transaction(
+                t_type="IN",
+                sku="CEM-40kg",
+                qty=50,
+                supplier_name="ABC Supply",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="OUT",
+                sku="CEM-40kg",
+                qty=20,
+                project_code="PJ-001",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="OUT",
+                sku="CEM-40kg",
+                qty=1,
+                project_code="PJ-001",
+                warehouse_code="SAT",
+                db_path=self.db_path,
+            )
+            self.assertFalse(ok)
+            self.assertIn("Insufficient stock", msg)
+
+        def test_transfer_between_warehouses(self) -> None:
+            ok, msg = record_transaction(
+                t_type="IN",
+                sku="RBR-10mm",
+                qty=10,
+                supplier_name="ABC Supply",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="XFER_OUT",
+                sku="RBR-10mm",
+                qty=4,
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            ok, msg = record_transaction(
+                t_type="XFER_IN",
+                sku="RBR-10mm",
+                qty=4,
+                warehouse_code="SAT",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            with closing(get_conn(self.db_path)) as conn:
+                item_id = conn.execute("SELECT id FROM items WHERE sku=?", ("RBR-10mm",)).fetchone()["id"]
+                shell_id = conn.execute("SELECT id FROM warehouses WHERE code=?", ("SHELL",)).fetchone()["id"]
+                sat_id = conn.execute("SELECT id FROM warehouses WHERE code=?", ("SAT",)).fetchone()["id"]
+                shell_stock = _warehouse_stock(conn, int(item_id), int(shell_id))
+                sat_stock = _warehouse_stock(conn, int(item_id), int(sat_id))
+            self.assertEqual(shell_stock, 6.0)
+            self.assertEqual(sat_stock, 4.0)
+
+        def test_receive_against_po_closes_when_complete(self) -> None:
+            ok, msg = po_create("PO-001", "ABC Supply", db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            ok, msg = po_add_item("PO-001", "CEM-40kg", 30, 250.0, db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            ok, msg = receive_against_po("PO-001", "CEM-40kg", 20, "SHELL", db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            with closing(get_conn(self.db_path)) as conn:
+                status = conn.execute(
+                    "SELECT status FROM purchase_orders WHERE po_no=?",
+                    ("PO-001",),
+                ).fetchone()["status"]
+                received = conn.execute(
+                    "SELECT qty_received FROM purchase_order_items WHERE po_id=(SELECT id FROM purchase_orders WHERE po_no=?)",
+                    ("PO-001",),
+                ).fetchone()["qty_received"]
+            self.assertEqual(status, "OPEN")
+            self.assertEqual(float(received), 20.0)
+            ok, msg = receive_against_po("PO-001", "CEM-40kg", 10, "SHELL", db_path=self.db_path)
+            self.assertTrue(ok, msg)
+            with closing(get_conn(self.db_path)) as conn:
+                status = conn.execute(
+                    "SELECT status FROM purchase_orders WHERE po_no=?",
+                    ("PO-001",),
+                ).fetchone()["status"]
+                received = conn.execute(
+                    "SELECT qty_received FROM purchase_order_items WHERE po_id=(SELECT id FROM purchase_orders WHERE po_no=?)",
+                    ("PO-001",),
+                ).fetchone()["qty_received"]
+                item_id = conn.execute("SELECT id FROM items WHERE sku=?", ("CEM-40kg",)).fetchone()["id"]
+                shell_id = conn.execute("SELECT id FROM warehouses WHERE code=?", ("SHELL",)).fetchone()["id"]
+                shell_stock = _warehouse_stock(conn, int(item_id), int(shell_id))
+            self.assertEqual(status, "CLOSED")
+            self.assertEqual(float(received), 30.0)
+            self.assertEqual(shell_stock, 30.0)
+
+        def test_low_stock_reporting(self) -> None:
+            ok, msg = record_transaction(
+                t_type="IN",
+                sku="CEM-40kg",
+                qty=5,
+                supplier_name="ABC Supply",
+                warehouse_code="SHELL",
+                db_path=self.db_path,
+            )
+            self.assertTrue(ok, msg)
+            lows = low_stock_items(db_path=self.db_path)
+            if pd is not None and hasattr(lows, "__getitem__") and hasattr(lows, "to_dict"):
+                sku_list = set(lows["sku"].tolist()) if len(lows) else set()
+            else:
+                sku_list = {row["sku"] for row in lows}
+            self.assertIn("CEM-40kg", sku_list)
+
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(InventoryTests)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return result.wasSuccessful()
+
+
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.test:
+        return 0 if _run_tests() else 1
+
+    if args.cmd == "init-db":
+        init_db()
+        print("DB initialized.")
+        return 0
+
+    if args.cmd:
+        init_db()
+        return run_cmd(args)
+
+    if _STREAMLIT_AVAILABLE:
+        run_streamlit_ui()
+        return 0
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
