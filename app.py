@@ -708,47 +708,188 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_cmd(args: argparse.Namespace) -> int:
-    if args.cmd == "init-db": init_db(); print("DB initialized."); return 
-    if args.cmd == "add-warehouse":
-        ok, msg = upsert("warehouses", {"code": args.code, "name": args.name, "location": args.location}, unique_field="code"); print(msg); return 0 if ok else 1
-    if args.cmd == "list-warehouses":
-        rows = list_df("SELECT code, name, location FROM warehouses ORDER BY code"); print(rows.to_string(index=False) if pd is not None else rows); return 0
-    if args.cmd == "add-item":
-        ok, msg = add_item(Item(args.sku, args.name, args.unit, args.category, float(args.min_stock), args.notes)); print(msg); return 0 if ok else 1
-    if args.cmd == "add-supplier":
-        ok, msg = upsert("suppliers", {"name": args.name, "contact": args.contact, "phone": args.phone, "email": args.email}, unique_field="name"); print(msg); return 0 if ok else 1
-    if args.cmd == "add-project":
-        ok, msg = upsert("projects", {"code": args.code, "name": args.name, "location": args.location}, unique_field="code"); print(msg); return 0 if ok else 1
-    if args.cmd == "tx-in":
-        ok, msg = record_transaction(t_type='IN', sku=args.sku, qty=float(args.qty), supplier_name=args.supplier, unit_cost=args.unit_cost, reference=args.ref, remarks=args.remarks, warehouse_code=args.wh, allow_negative_stock=False); print(msg); return 0 if ok else 1
-    if args.cmd == "tx-out":
-        ok, msg = record_transaction(t_type='OUT', sku=args.sku, qty=float(args.qty), project_code=args.project, reference=args.ref, remarks=args.remarks, warehouse_code=args.wh, allow_negative_stock=bool(getattr(args, 'allow_negative', False))); print(msg); return 0 if ok else 1
-    if args.cmd == "transfer":
-        ok, msg = record_transaction(t_type='XFER_OUT', sku=args.sku, qty=float(args.qty), reference=args.ref, remarks=args.remarks, warehouse_code=args.src, allow_negative_stock=False)
-        if ok:
-            ok, msg = record_transaction(t_type='XFER_IN', sku=args.sku, qty=float(args.qty), reference=args.ref, remarks=args.remarks, warehouse_code=args.dst, allow_negative_stock=False)
-        print(msg); return 0 if ok else 1
-    if args.cmd == "po-create": ok, msg = po_create(args.po, args.supplier); print(msg); return 0 if ok else 1
-    if args.cmd == "po-add-item": ok, msg = po_add_item(args.po, args.sku, float(args.qty), args.unit_cost); print(msg); return 0 if ok else 1
-    if args.cmd == "receive": ok, msg = receive_against_po(args.po, args.sku, float(args.qty), args.wh); print(msg); return 0 if ok else 1
-    if args.cmd == "dr-out": ok, msg = record_transaction(t_type='OUT', sku=args.sku, qty=float(args.qty), project_code=args.project, reference=f"DR:{args.dr}", remarks=args.remarks, warehouse_code=args.wh, allow_negative_stock=False); print(msg); return 0 if ok else 1
-    if args.cmd == "stock":
-        rows = current_stock_by_item(by_warehouse=bool(getattr(args, 'by_warehouse', False)))
-        if pd is not None: print(rows.to_string(index=False))
-        else: print(rows)
+    if args.cmd == "init-db":
+        init_db()
+        print("DB initialized.")
         return 0
+
+    if args.cmd == "add-warehouse":
+        ok, msg = upsert(
+            "warehouses",
+            {"code": args.code, "name": args.name, "location": args.location},
+            unique_field="code",
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "list-warehouses":
+        rows = list_df("SELECT code, name, location FROM warehouses ORDER BY code")
+        if pd is not None:
+            print(rows.to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
+    if args.cmd == "add-item":
+        ok, msg = add_item(
+            Item(
+                args.sku,
+                args.name,
+                args.unit,
+                args.category,
+                float(args.min_stock),
+                args.notes,
+            )
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "add-supplier":
+        ok, msg = upsert(
+            "suppliers",
+            {
+                "name": args.name,
+                "contact": args.contact,
+                "phone": args.phone,
+                "email": args.email,
+            },
+            unique_field="name",
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "add-project":
+        ok, msg = upsert(
+            "projects",
+            {
+                "code": args.code,
+                "name": args.name,
+                "location": args.location,
+            },
+            unique_field="code",
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "tx-in":
+        ok, msg = record_transaction(
+            t_type="IN",
+            sku=args.sku,
+            qty=float(args.qty),
+            supplier_name=args.supplier,
+            unit_cost=args.unit_cost,
+            reference=args.ref,
+            remarks=args.remarks,
+            warehouse_code=args.wh,
+            allow_negative_stock=False,
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "tx-out":
+        ok, msg = record_transaction(
+            t_type="OUT",
+            sku=args.sku,
+            qty=float(args.qty),
+            project_code=args.project,
+            reference=args.ref,
+            remarks=args.remarks,
+            warehouse_code=args.wh,
+            allow_negative_stock=bool(getattr(args, "allow_negative", False)),
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "transfer":
+        ok, msg = record_transaction(
+            t_type="XFER_OUT",
+            sku=args.sku,
+            qty=float(args.qty),
+            reference=args.ref,
+            remarks=args.remarks,
+            warehouse_code=args.src,
+            allow_negative_stock=False,
+        )
+        if ok:
+            ok, msg = record_transaction(
+                t_type="XFER_IN",
+                sku=args.sku,
+                qty=float(args.qty),
+                reference=args.ref,
+                remarks=args.remarks,
+                warehouse_code=args.dst,
+                allow_negative_stock=False,
+            )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "po-create":
+        ok, msg = po_create(args.po, args.supplier)
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "po-add-item":
+        ok, msg = po_add_item(args.po, args.sku, float(args.qty), args.unit_cost)
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "receive":
+        ok, msg = receive_against_po(args.po, args.sku, float(args.qty), args.wh)
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "dr-out":
+        ok, msg = record_transaction(
+            t_type="OUT",
+            sku=args.sku,
+            qty=float(args.qty),
+            project_code=args.project,
+            reference=f"DR:{args.dr}",
+            remarks=args.remarks,
+            warehouse_code=args.wh,
+            allow_negative_stock=False,
+        )
+        print(msg)
+        return 0 if ok else 1
+
+    if args.cmd == "stock":
+        rows = current_stock_by_item(by_warehouse=bool(getattr(args, "by_warehouse", False)))
+        if pd is not None:
+            print(rows.to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
     if args.cmd == "low-stock":
-        rows = low_stock_items(); print(rows.to_string(index=False) if pd is not None else rows); return 0
+        rows = low_stock_items()
+        if pd is not None:
+            print(rows.to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
     if args.cmd == "list-tx":
         with closing(get_conn()) as conn:
-            rows = [dict(r) for r in conn.execute("SELECT * FROM transactions ORDER BY ts DESC, id DESC LIMIT 200").fetchall()]
-        print(rows.to_string(index=False) if (pd is not None and hasattr(pd, 'DataFrame')) else rows); return 0
+            rows = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM transactions ORDER BY ts DESC, id DESC LIMIT 200"
+                ).fetchall()
+            ]
+        if pd is not None and hasattr(pd, "DataFrame"):
+            print(pd.DataFrame(rows).to_string(index=False))
+        else:
+            print(rows)
+        return 0
+
     if args.cmd == "import":
         import_csv(args.path)
         return 0
+
     if args.cmd == "export":
         export_csv(args.folder)
         return 0
+
     return 0
 
 # -------------------------- Tests -------------------------- #
@@ -778,7 +919,7 @@ def _run_tests() -> bool:
                 pass
 
         def test_in_out_per_warehouse_blocking(self) -> None:
-                        ok, msg = record_transaction(
+            ok, msg = record_transaction(
                 t_type="IN",
                 sku="CEM-40kg",
                 qty=50,
