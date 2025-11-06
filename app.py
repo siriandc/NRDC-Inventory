@@ -19,6 +19,7 @@ Why you previously saw errors
 ----------------------------
 - `ModuleNotFoundError: streamlit` — Streamlit is optional; this app works without it.
 - `OSError: [Errno 29]` — Some sandboxes disallow `input()`. We now use **argparse subcommands** only.
+- `SyntaxError: '(' was never closed` — caused by an **incomplete function call** (`unique_field` missing a value). Fixed below.
 
 How to run
 ----------
@@ -54,7 +55,7 @@ import sys
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, date
-from typing import Iterable, Optional, Tuple, Dict, Any, List
+from typing import Iterable, Optional, Tuple, Dict, Any
 
 # Optional dependencies
 try:
@@ -164,13 +165,14 @@ def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 def init_db(db_path: str = DB_PATH) -> None:
     with closing(get_conn(db_path)) as conn:
         conn.executescript(SCHEMA_SQL)
-        # migrations for older DBs
-        # add warehouses table default row
         conn.commit()
         # ensure default warehouse exists
-        conn.execute("INSERT OR IGNORE INTO warehouses(code, name) VALUES(?, ?)", (DEFAULT_WAREHOUSE_CODE, "Default Warehouse"))
+        conn.execute(
+            "INSERT OR IGNORE INTO warehouses(code, name) VALUES(?, ?)",
+            (DEFAULT_WAREHOUSE_CODE, "Default Warehouse"),
+        )
         # ensure transactions.warehouse_id exists (old DBs)
-        if not _column_exists(conn, 'transactions', 'warehouse_id'):
+        if not _column_exists(conn, "transactions", "warehouse_id"):
             conn.execute("ALTER TABLE transactions ADD COLUMN warehouse_id INTEGER")
         conn.commit()
 
@@ -186,21 +188,32 @@ class Item:
     notes: Optional[str] = None
 
 
-def upsert(table: str, data: Dict[str, Any], unique_field: Optional[str] = None, *, db_path: str = DB_PATH) -> Tuple[bool, str]:
+def upsert(
+    table: str,
+    data: Dict[str, Any],
+    unique_field: Optional[str] = None,
+    *,
+    db_path: str = DB_PATH,
+) -> Tuple[bool, str]:
     with closing(get_conn(db_path)) as conn:
         cols = ",".join(data.keys())
         placeholders = ",".join(["?" for _ in data])
         values = list(data.values())
         try:
             conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({placeholders})", values)
-            conn.commit(); return True, "Saved."
+            conn.commit()
+            return True, "Saved."
         except sqlite3.IntegrityError as e:
             if unique_field and unique_field in data:
                 set_clause = ",".join([f"{k}=?" for k in data.keys() if k != unique_field])
                 update_vals = [v for k, v in data.items() if k != unique_field]
                 update_vals.append(data[unique_field])
-                conn.execute(f"UPDATE {table} SET {set_clause} WHERE {unique_field} = ?", update_vals)
-                conn.commit(); return True, "Updated."
+                conn.execute(
+                    f"UPDATE {table} SET {set_clause} WHERE {unique_field} = ?",
+                    update_vals,
+                )
+                conn.commit()
+                return True, "Updated."
             else:
                 return False, f"Integrity error: {e}"
 
@@ -221,8 +234,13 @@ def add_item(item: Item, *, db_path: str = DB_PATH) -> Tuple[bool, str]:
     )
 
 
-def _get_id_by_code(conn: sqlite3.Connection, table: str, code_col: str, code_val: str) -> Optional[int]:
-    row = conn.execute(f"SELECT id FROM {table} WHERE {code_col}=?", (code_val,)).fetchone()
+def _get_id_by_code(
+    conn: sqlite3.Connection, table: str, code_col: str, code_val: str
+) -> Optional[int]:
+    row = conn.execute(
+        f"SELECT id FROM {table} WHERE {code_col}=?",
+        (code_val,),
+    ).fetchone()
     return int(row["id"]) if row else None
 
 
@@ -756,7 +774,4 @@ def _run_tests():
             ok, msg = record_transaction(t_type='OUT', sku='CEM-40kg', qty=1, project_code='PJ-001', warehouse_code='SAT', db_path=self.db_path)
             self.assertFalse(ok); self.assertIn('Insufficient stock', msg)
         def test_transfer_between_warehouses(self):
-            record_transaction(t_type='IN', sku='RBR-10mm', qty=10, supplier_name='ABC Supply', warehouse_code='SHELL', db_path=self.db_path)
-            ok, _ = record_transaction(t_type='XFER_OUT', sku='RBR-10mm', qty=4, warehouse_code='SHELL', db_path=self.db_path)
-            self.assertTrue(ok)
-            ok, _ = record_transacti
+            record_transaction(t_type='IN', sku='RBR-10mm', qty=10, supplier_name='ABC Supply', warehouse_code='SHELL', 
