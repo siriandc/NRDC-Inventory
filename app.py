@@ -450,7 +450,46 @@ def run_streamlit_ui():  # pragma: no cover
         st.subheader("Record Stock Movement (IN / OUT / Transfer)")
         items_df = list_df("SELECT * FROM items ORDER BY name")
         wh_df = list_df("SELECT code FROM warehouses ORDER BY code")
-        wh_list = (wh_df["code"].tolist() if pd is not None and hasattr(wh_df, "__getitem__") else [DEFAULT_WAREHOUSE_CODE])
+        suppliers_df = list_df("SELECT name FROM suppliers ORDER BY name")
+        projects_df = list_df("SELECT code, name FROM projects ORDER BY code")
+
+        def _records(data):
+            if pd is not None and hasattr(data, "to_dict"):
+                return data.to_dict("records")
+            return data
+
+        wh_records = _records(wh_df)
+        supplier_records = _records(suppliers_df)
+        project_records = _records(projects_df)
+
+        wh_list = [str(r["code"]) for r in wh_records] if wh_records else [DEFAULT_WAREHOUSE_CODE]
+
+        entity_options: list[dict[str, str]] = []
+        for code in wh_list:
+            entity_options.append({"type": "warehouse", "value": code, "label": f"Warehouse: {code}"})
+        for row in supplier_records:
+            name = str(row.get("name", "")).strip()
+            if name:
+                entity_options.append({"type": "supplier", "value": name, "label": f"Supplier: {name}"})
+        for row in project_records:
+            code = str(row.get("code", "")).strip()
+            if not code:
+                continue
+            name = str(row.get("name", "")).strip()
+            label = f"Project: {code}" + (f" — {name}" if name else "")
+            entity_options.append({"type": "project", "value": code, "label": label})
+
+        def _find_index(value: str, kind: str) -> int:
+            for idx, opt in enumerate(entity_options):
+                if opt["type"] == kind and opt["value"] == value:
+                    return idx
+            return 0 if entity_options else 0
+
+        default_wh_idx = _find_index(DEFAULT_WAREHOUSE_CODE, "warehouse")
+
+        def _fmt_choice(opt: dict[str, str]) -> str:
+            return opt.get("label", "")
+
         with st.form("tx_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -458,25 +497,69 @@ def run_streamlit_ui():  # pragma: no cover
                 item_name = st.selectbox("Item", options=(items_df["name"].tolist() if pd is not None else []))
                 qty = st.number_input("Quantity", min_value=0.0, step=1.0, value=0.0)
             with c2:
-                wh_src = st.selectbox("From Warehouse", options=wh_list, index=max(0, wh_list.index(DEFAULT_WAREHOUSE_CODE) if DEFAULT_WAREHOUSE_CODE in wh_list else 0))
-                wh_dst = st.selectbox("To Warehouse (for Transfer)", options=wh_list)
+                origin_choice = st.selectbox("Origin", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
+                destination_choice = st.selectbox("Destination", options=entity_options, index=default_wh_idx, format_func=_fmt_choice)
             with c3:
-                project = st.text_input("Project code (for OUT)")
-                supplier = st.text_input("Supplier (for IN)")
                 ref = st.text_input("Reference (PO/DR/JO)")
             if st.form_submit_button("Save"):
-                sku = items_df.loc[items_df["name"] == item_name, "sku"].iloc[0]
-                if mode == "IN":
-                    ok, msg = record_transaction(t_type='IN', sku=sku, qty=qty, supplier_name=supplier or None, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
-                elif mode == "OUT":
-                    ok, msg = record_transaction(t_type='OUT', sku=sku, qty=qty, project_code=project or None, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
+                if pd is not None and hasattr(items_df, "loc"):
+                    sku_series = items_df.loc[items_df["name"] == item_name, "sku"]
+                    sku = sku_series.iloc[0] if not sku_series.empty else None
                 else:
-                    # transfer: XFER_OUT then XFER_IN
-                    ok, msg = record_transaction(t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None, warehouse_code=wh_src, allow_negative_stock=False)
-                    if ok:
-                        ok, msg = record_transaction(t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None, warehouse_code=wh_dst, allow_negative_stock=False)
-                (st.success if ok else st.error)(msg)
+                    sku = next((row.get("sku") for row in items_df if row.get("name") == item_name), None) if item_name else None
 
+                if not sku:
+                    st.error("Unable to determine SKU for the selected item.")
+                else:
+                    origin_type = origin_choice.get("type") if isinstance(origin_choice, dict) else None
+                    origin_val = origin_choice.get("value") if isinstance(origin_choice, dict) else None
+                    dest_type = destination_choice.get("type") if isinstance(destination_choice, dict) else None
+                    dest_val = destination_choice.get("value") if isinstance(destination_choice, dict) else None
+
+                    ok = False
+                    msg = ""
+
+                    supplier_name = None
+                    project_code = None
+
+                    if mode == "IN":
+                        if dest_type != "warehouse" or not dest_val:
+                            st.error("Destination must be a warehouse for IN transactions.")
+                        else:
+                            if origin_type == "supplier":
+                                supplier_name = origin_val
+                            elif origin_type == "project":
+                                project_code = origin_val
+                            ok, msg = record_transaction(
+                                t_type='IN', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=dest_val, allow_negative_stock=False)
+                    elif mode == "OUT":
+                        if origin_type != "warehouse" or not origin_val:
+                            st.error("Origin must be a warehouse for OUT transactions.")
+                        else:
+                            if dest_type == "project":
+                                project_code = dest_val
+                            elif dest_type == "supplier":
+                                supplier_name = dest_val
+                            ok, msg = record_transaction(
+                                t_type='OUT', sku=sku, qty=qty, supplier_name=supplier_name,
+                                project_code=project_code, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                    else:
+                        if origin_type != "warehouse" or dest_type != "warehouse" or not origin_val or not dest_val:
+                            st.error("Transfers require both origin and destination to be warehouses.")
+                        else:
+                            ok, msg = record_transaction(
+                                t_type='XFER_OUT', sku=sku, qty=qty, reference=ref or None,
+                                warehouse_code=origin_val, allow_negative_stock=False)
+                            if ok:
+                                ok, msg = record_transaction(
+                                    t_type='XFER_IN', sku=sku, qty=qty, reference=ref or None,
+                                    warehouse_code=dest_val, allow_negative_stock=False)
+                    if msg:
+                        (st.success if ok else st.error)(msg)
+                        
     elif page == "PO/Receiving":
         st.subheader("Purchase Orders & Receiving")
         po_no = st.text_input("PO No.")
